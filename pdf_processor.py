@@ -20,7 +20,7 @@ def pdf_to_images(pdf_path: str | Path) -> Generator[Image.Image, None, None]:
     from pdf2image import convert_from_path  # imported here so the rest of the
                                               # app still loads without poppler
 
-    pages = convert_from_path(str(pdf_path), dpi=config.PDF_DPI)
+    pages = convert_from_path(str(pdf_path), dpi=config.PDF_DPI, poppler_path=r"poppler-25.12.0\bin")
     for page in pages:
         yield page
 
