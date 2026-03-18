@@ -56,6 +56,8 @@ def write_records(
 
     rows_written = 0
     for record in records:
+        if record.get("_skip"):
+            continue
         if "_raw_response" in record:
             print(
                 f"[SKIP] 파싱 실패 (페이지 {record.get('_source_page', '?')}): "

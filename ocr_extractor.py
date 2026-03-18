@@ -14,20 +14,34 @@ from pdf_processor import image_to_base64
 
 _SYSTEM_PROMPT = """\
 You are an expert document data extractor for Korean corporate training records.
-Extract data from the provided training document image and return ONLY a valid JSON object.
+Extract data from the provided training document image and return ONLY valid JSON.
 The document may contain Korean and/or English text.
 
-Extract the following fields (use null if a field is not found):
-- class_number: Training class / course number (교육 회차 or 클래스 번호)
-- case_number: Case number (케이스 번호)
-- trainee_name: Trainee full name (교육생 이름)
-- date: Training date in YYYY-MM-DD format (교육 날짜)
-- training_content: Main training subject or topic (교육 내용/주제)
-- score: Raw score or grade (점수/성적)
-- evaluation_score: Evaluation / assessment score (평가 점수)
-- feedback_comments: Any feedback or comment text (피드백/의견)
+RESPONSE FORMAT RULES:
+- If the page contains data for MULTIPLE trainees: return a JSON ARRAY of objects (one per trainee)
+- If the page contains data for ONE trainee: return a single JSON object
+- If the page is a cover page, blank page, table of contents, or has NO trainee-specific data: return {"_skip": true}
 
-Return ONLY the JSON object, no markdown fences, no explanation.
+Extract the following fields (use null if a field is not found):
+- class_number: The training batch/session NUMBER only (e.g. "4059").
+  Do NOT put course names, levels, or "Level C" here. Only numeric or short alphanumeric batch IDs.
+- case_number: Equipment or product case/serial number (e.g. "C0912010").
+  This is typically an alphanumeric code starting with a letter (e.g. C, LB) identifying the equipment.
+- trainee_name: ONE individual trainee's full name only.
+  If multiple trainees appear on the same page (e.g. attendance sheet), create SEPARATE records for each.
+  Do NOT combine multiple names into one field.
+- date: The date this specific training SESSION was conducted, in YYYY-MM-DD format.
+  Use the actual training date shown on the document header or title area.
+  Do NOT use dates from old certification histories, previous test records, or issuance dates of past documents.
+- training_content: Short course name or topic (e.g. "LB 750 Level C", "Line Beam 750 Level C").
+  Keep it brief — do not include full sentences or paragraphs.
+- score: Numeric test/exam score ONLY (e.g. 80.5, 69).
+  Do NOT put level names like "Level C" or "C Level" here. Use null if no numeric score is present.
+- evaluation_score: Numeric training satisfaction or self-evaluation score if present (e.g. 10). Use null if absent.
+- feedback_comments: Text feedback, opinion, or comments written by the trainee.
+  For survey/설문 pages, include the trainee's written responses.
+
+Return ONLY the JSON object or array, no markdown fences, no explanation.
 """
 
 
@@ -72,10 +86,13 @@ def extract_data_from_image(
     raw = re.sub(r"\n?```$", "", raw)
 
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
+        # Normalise to a list so callers always get list[dict]
+        if isinstance(parsed, list):
+            return parsed
+        return [parsed]
     except json.JSONDecodeError:
-        # Return whatever we got so the caller can log / review it
-        return {"_raw_response": raw}
+        return [{"_raw_response": raw}]
 
 
 def extract_data_from_pdf(
@@ -93,9 +110,12 @@ def extract_data_from_pdf(
     for page_num, img in enumerate(pdf_to_images(pdf_path), start=1):
         if status_callback:
             status_callback(f"페이지 {page_num} 처리 중...")
-        data = extract_data_from_image(img, client=client)
-        data["_source_page"] = page_num
-        data["_source_file"] = str(pdf_path)
-        results.append(data)
+        records = extract_data_from_image(img, client=client)
+        for record in records:
+            if record.get("_skip"):
+                continue
+            record["_source_page"] = page_num
+            record["_source_file"] = str(pdf_path)
+            results.append(record)
 
     return results
