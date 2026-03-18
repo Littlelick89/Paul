@@ -22,24 +22,42 @@ RESPONSE FORMAT RULES:
 - If the page contains data for ONE trainee: return a single JSON object
 - If the page is a cover page, blank page, table of contents, or has NO trainee-specific data: return {"_skip": true}
 
-Extract the following fields (use null if a field is not found):
-- class_number: The training batch/session NUMBER only (e.g. "4059").
-  Do NOT put course names, levels, or "Level C" here. Only numeric or short alphanumeric batch IDs.
-- case_number: Equipment or product case/serial number (e.g. "C0912010").
-  This is typically an alphanumeric code starting with a letter (e.g. C, LB) identifying the equipment.
+Extract ALL of the following fields that are visible on this page (use null for fields not present):
+
+=== Basic Training Info ===
+- class_number: Training batch/session number ONLY (e.g. "4059").
+  Do NOT put course names or level text here.
+- course_begin_date: Start date of the training course in YYYY-MM-DD format.
+- course_end_date: End date of the training course in YYYY-MM-DD format.
+  If only one date is shown (single-day course), use the same value as course_begin_date.
+- training_center: Name or location of the training facility/center.
+- trainee_type: Type/category of trainee (e.g. "Engineer", "Technician", "User", "엔지니어", "사용자").
+- trainee_account: Company or organisation the trainee belongs to (계정/소속 회사).
 - trainee_name: ONE individual trainee's full name only.
-  If multiple trainees appear on the same page (e.g. attendance sheet), create SEPARATE records for each.
+  If multiple trainees appear on the same page, create SEPARATE records for each person.
   Do NOT combine multiple names into one field.
-- date: The date this specific training SESSION was conducted, in YYYY-MM-DD format.
-  Use the actual training date shown on the document header or title area.
-  Do NOT use dates from old certification histories, previous test records, or issuance dates of past documents.
-- training_content: Short course name or topic (e.g. "LB 750 Level C", "Line Beam 750 Level C").
-  Keep it brief — do not include full sentences or paragraphs.
-- score: Numeric test/exam score ONLY (e.g. 80.5, 69).
-  Do NOT put level names like "Level C" or "C Level" here. Use null if no numeric score is present.
-- evaluation_score: Numeric training satisfaction or self-evaluation score if present (e.g. 10). Use null if absent.
-- feedback_comments: Text feedback, opinion, or comments written by the trainee.
-  For survey/설문 pages, include the trainee's written responses.
+- training_course_description: Short course name (e.g. "LB 750 Level C", "Line Beam 750 Level C").
+  Keep it brief — do not paste full sentences.
+
+=== Evaluation of Training Course (점수: 1점~5점 or similar scale) ===
+- eval_q1 through eval_q15: Numeric scores for evaluation questions 1 to 15.
+  Extract the score the trainee gave for each question number.
+  Use null if a particular question number is not found on this page.
+
+=== Evaluation Comments (주관식 텍스트 답변) ===
+- comment_q16: Text answer for question 16 (e.g. "What did you like most?").
+- comment_q17: Text answer for question 17 (e.g. "What did you dislike?").
+- comment_q18: Text answer for question 18 (e.g. "What improvements would you suggest?").
+
+=== Survey of Training (설문조사 점수) ===
+- survey_q1 through survey_q39: Numeric scores for survey questions 1 to 39.
+  Extract the score for each survey question number.
+  Use null if a particular survey question is not found on this page.
+
+IMPORTANT NOTES:
+- Use the training SESSION date for course_begin_date / course_end_date, NOT dates from old certificates.
+- score fields must be NUMERIC only (e.g. 4, 3.5, 80). Never put text like "Level C" in a score field.
+- If a page has evaluation Q1-Q15 but no survey data, leave all survey_q fields as null (and vice versa).
 
 Return ONLY the JSON object or array, no markdown fences, no explanation.
 """
@@ -48,8 +66,8 @@ Return ONLY the JSON object or array, no markdown fences, no explanation.
 def extract_data_from_image(
     img: Image.Image,
     client: anthropic.Anthropic | None = None,
-) -> dict[str, Any]:
-    """Send *img* to Claude vision and return extracted fields as a dict."""
+) -> list[dict[str, Any]]:
+    """Send *img* to Claude vision and return a list of extracted field dicts."""
     if client is None:
         client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
@@ -57,7 +75,7 @@ def extract_data_from_image(
 
     message = client.messages.create(
         model=config.CLAUDE_MODEL,
-        max_tokens=1024,
+        max_tokens=2048,
         system=_SYSTEM_PROMPT,
         messages=[
             {
@@ -95,18 +113,48 @@ def extract_data_from_image(
         return [{"_raw_response": raw}]
 
 
+def merge_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge page-level records into one record per trainee.
+
+    Records sharing the same (class_number, trainee_name) key are merged by
+    taking the first non-null value for each field.  Records where both key
+    fields are null are kept as-is (they cannot be de-duplicated).
+    """
+    merged: dict[tuple, dict[str, Any]] = {}
+    ungrouped: list[dict[str, Any]] = []
+
+    for record in records:
+        class_num = record.get("class_number")
+        name = record.get("trainee_name")
+
+        if class_num is None and name is None:
+            ungrouped.append(record)
+            continue
+
+        key = (class_num, name)
+        if key not in merged:
+            merged[key] = dict(record)
+        else:
+            # Fill in any null fields from this record
+            for field, value in record.items():
+                if value is not None and merged[key].get(field) is None:
+                    merged[key][field] = value
+
+    return list(merged.values()) + ungrouped
+
+
 def extract_data_from_pdf(
     pdf_path: str,
     client: anthropic.Anthropic | None = None,
     status_callback=None,
 ) -> list[dict[str, Any]]:
-    """Process every page of *pdf_path* and return a list of extracted records."""
+    """Process every page of *pdf_path* and return one merged record per trainee."""
     from pdf_processor import pdf_to_images
 
     if client is None:
         client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
-    results: list[dict[str, Any]] = []
+    page_records: list[dict[str, Any]] = []
     for page_num, img in enumerate(pdf_to_images(pdf_path), start=1):
         if status_callback:
             status_callback(f"페이지 {page_num} 처리 중...")
@@ -116,6 +164,6 @@ def extract_data_from_pdf(
                 continue
             record["_source_page"] = page_num
             record["_source_file"] = str(pdf_path)
-            results.append(record)
+            page_records.append(record)
 
-    return results
+    return merge_records(page_records)

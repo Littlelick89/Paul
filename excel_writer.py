@@ -13,7 +13,7 @@ import config
 
 
 def _col_letter_to_index(letter: str) -> int:
-    """Convert a column letter ('A', 'B', …) to a 1-based integer."""
+    """Convert a column letter ('A', 'AA', …) to a 1-based integer."""
     return column_index_from_string(letter.upper())
 
 
@@ -26,6 +26,21 @@ def _find_next_empty_row(ws, start_row: int, key_col: str) -> int:
     return row
 
 
+def _write_headers(ws) -> None:
+    """Write column header labels to row 1 of *ws*."""
+    col_map = config.EXCEL_COLUMN_MAP
+    headers = config.EXCEL_HEADERS
+    for field, col_letter in col_map.items():
+        label = headers.get(field, field)
+        ws.cell(row=1, column=_col_letter_to_index(col_letter), value=label)
+
+
+def _sheet_has_headers(ws) -> bool:
+    """Return True if the first cell of the sheet already has content."""
+    first_col = next(iter(config.EXCEL_COLUMN_MAP.values()))
+    return ws.cell(row=1, column=_col_letter_to_index(first_col)).value is not None
+
+
 def write_records(
     records: list[dict[str, Any]],
     excel_path: str | Path,
@@ -33,8 +48,9 @@ def write_records(
 ) -> int:
     """Append *records* to *excel_path* and return the number of rows written.
 
-    Each record should have keys matching ``config.EXCEL_COLUMN_MAP``.
-    Records with ``_raw_response`` (failed OCR parse) are skipped and logged.
+    - Creates the workbook / sheet if they do not exist.
+    - Writes headers to row 1 if the sheet is empty.
+    - Skips records flagged with ``_skip`` or ``_raw_response``.
     """
     excel_path = Path(excel_path)
 
@@ -49,6 +65,10 @@ def write_records(
         ws = wb.create_sheet(sheet_name)
     else:
         ws = wb.active
+
+    # Write headers if the sheet is brand-new / empty
+    if not _sheet_has_headers(ws):
+        _write_headers(ws)
 
     col_map = config.EXCEL_COLUMN_MAP
     # Determine first key column for "next empty row" detection
