@@ -12,56 +12,97 @@ from PIL import Image
 import config
 from pdf_processor import image_to_base64
 
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
+
 _SYSTEM_PROMPT = """\
-You are an expert document data extractor for Korean corporate training records.
-Extract data from the provided training document image and return ONLY valid JSON.
-The document may contain Korean and/or English text.
+You are an expert document data extractor for Korean/English corporate training records.
+Return ONLY valid JSON — no markdown fences, no explanation.
 
-RESPONSE FORMAT RULES:
-- If the page contains data for MULTIPLE trainees: return a JSON ARRAY of objects (one per trainee)
-- If the page contains data for ONE trainee: return a single JSON object
-- If the page is a cover page, blank page, table of contents, or has NO trainee-specific data: return {"_skip": true}
+════════════════════════════════════════════════════════
+RESPONSE FORMAT
+════════════════════════════════════════════════════════
+• Single JSON object  → page has data for ONE trainee
+• JSON array          → page has data for MULTIPLE trainees (one object per person)
+• {"_skip": true}     → blank page or page with no extractable data
 
-Extract ALL of the following fields that are visible on this page (use null for fields not present):
+SPECIAL CASE — Training Check List / Preparation & Finishing Check List
+  These pages show a table of topics with columns of checkmarks for the whole class.
+  Return ONE object with ONLY the class-level fields below and "_class_level": true.
+  Leave trainee_name as null — do NOT create one record per listed trainee name.
 
-=== Basic Training Info ===
-- class_number: Training batch/session number ONLY (e.g. "4059").
-  Do NOT put course names or level text here.
-- course_begin_date: Start date of the training course in YYYY-MM-DD format.
-- course_end_date: End date of the training course in YYYY-MM-DD format.
-  If only one date is shown (single-day course), use the same value as course_begin_date.
-- training_center: Name or location of the training facility/center.
-- trainee_type: Type/category of trainee (e.g. "Engineer", "Technician", "User", "엔지니어", "사용자").
-- trainee_account: Company or organisation the trainee belongs to (계정/소속 회사).
-- trainee_name: ONE individual trainee's full name only.
-  If multiple trainees appear on the same page, create SEPARATE records for each person.
-  Do NOT combine multiple names into one field.
-- training_course_description: Short course name (e.g. "LB 750 Level C", "Line Beam 750 Level C").
-  Keep it brief — do not paste full sentences.
+════════════════════════════════════════════════════════
+FIELDS  (use null for any field not visible on this page)
+════════════════════════════════════════════════════════
 
-=== Evaluation of Training Course (점수: 1점~5점 or similar scale) ===
-- eval_q1 through eval_q15: Numeric scores for evaluation questions 1 to 15.
-  Extract the score the trainee gave for each question number.
-  Use null if a particular question number is not found on this page.
+── Basic Training Info ──────────────────────────────────
+class_number                 Batch/session NUMBER only (e.g. "4059"). Never put course names or level text here.
+course_begin_date            Course start date YYYY-MM-DD. On Check List pages read the full date range (e.g. "26.01.2026 – 06.02.2026").
+course_end_date              Course end date YYYY-MM-DD.
+training_center              Full name of the training facility or location.
+trainee_type                 Category of trainee (e.g. "FSE", "Engineer", "User"). null if not shown.
+trainee_account              Company/organisation the trainee belongs to.
+trainee_name                 ONE trainee's SHORT ENGLISH name (e.g. "Lucas Gil", "Rob Lee").
+                             • Read the "Trainee (optional):" or "Name:" field in the form header.
+                             • Use the short/informal name, NOT the formal checklist format "Last, First(nick) (Korean)".
+                             • For pages listing multiple people, return a separate JSON object for each.
+training_course_description  Short course name (e.g. "LB 750 Level C"). Do not paste full sentences.
 
-=== Evaluation Comments (주관식 텍스트 답변) ===
-- comment_q16: Text answer for question 16 (e.g. "What did you like most?").
-- comment_q17: Text answer for question 17 (e.g. "What did you dislike?").
-- comment_q18: Text answer for question 18 (e.g. "What improvements would you suggest?").
+── Evaluation of Training Course  (Q1–Q15) ──────────────
+eval_q1 … eval_q15
+  Each question has 5 checkbox options in a row (Likert-style).
+  Find the checked box and record its column number: 1 (leftmost) … 5 (rightmost).
+  Use null if the question is not on this page.
 
-=== Survey of Training (설문조사 점수) ===
-- survey_q1 through survey_q39: Numeric scores for survey questions 1 to 39.
-  Extract the score for each survey question number.
-  Use null if a particular survey question is not found on this page.
+── Evaluation Comments  (Q16–Q18) ───────────────────────
+comment_q16   Text for "What did you like the most?" (주관식 Q16)
+comment_q17   Text for "What did you dislike the most?" (주관식 Q17)
+comment_q18   Text for "What improvements would you propose?" (주관식 Q18)
 
-IMPORTANT NOTES:
-- Use the training SESSION date for course_begin_date / course_end_date, NOT dates from old certificates.
-- score fields must be NUMERIC only (e.g. 4, 3.5, 80). Never put text like "Level C" in a score field.
-- If a page has evaluation Q1-Q15 but no survey data, leave all survey_q fields as null (and vice versa).
+── Survey of Training ────────────────────────────────────
+The Survey form is divided into sections.
 
-Return ONLY the JSON object or array, no markdown fences, no explanation.
+▸ SECTION I — Individual checkbox questions (Survey Q1–Q9)
+  survey_q1 … survey_q8
+    Each question has one or more checkbox options.
+    Record the selected option number (1, 2, 3 …) or 1=checked / 0=not-checked.
+
+  survey_q9_1, survey_q9_2, survey_q9_3, survey_q9_4, survey_q9_5
+    Q9 allows MULTIPLE simultaneous selections (5 independent options).
+    For EACH option: 1 = selected/checked, 0 = not selected.
+
+▸ SECTION II — Likert-scale table (Survey Q10–Q39)
+  This section is a TABLE:
+    • Rows  = survey questions/items (30 rows → Q10 to Q39)
+    • Columns = 5 rating options with this meaning:
+        Column 1 → "전혀 중요하지 않다"  (Not at all important) → score 1
+        Column 2 → "중요하지 않다"        (Not important)         → score 2
+        Column 3 → "보통이다"             (Neutral)               → score 3
+        Column 4 → "중요하다"             (Important)             → score 4
+        Column 5 → "매우 중요하다"        (Very important)        → score 5
+
+  HOW TO READ: For each row, locate the checkmark (✓, ✗, ■, ●, circled number,
+  or any mark) and determine which column (1–5) it falls in. That column number
+  is the score for that question.
+
+  survey_q10 = row 1, survey_q11 = row 2, … survey_q39 = row 30.
+  Extract ALL 30 rows. If a row has no mark, use null.
+
+════════════════════════════════════════════════════════
+IMPORTANT RULES
+════════════════════════════════════════════════════════
+• score/eval fields must be NUMERIC (e.g. 4, 3, 80.5). Never put text like "Level C".
+• Do NOT confuse the training check-list completion checkmarks with evaluation scores.
+• Handwritten exam answer pages: return {"_skip": true} — they contain no structured scores.
+• For Survey Section I vs Section II: Section I is a list of individual questions,
+  Section II is a grid/table format. They are on different pages or clearly separated.
 """
 
+
+# ---------------------------------------------------------------------------
+# Core extraction
+# ---------------------------------------------------------------------------
 
 def extract_data_from_image(
     img: Image.Image,
@@ -75,7 +116,7 @@ def extract_data_from_image(
 
     message = client.messages.create(
         model=config.CLAUDE_MODEL,
-        max_tokens=2048,
+        max_tokens=4096,
         system=_SYSTEM_PROMPT,
         messages=[
             {
@@ -91,7 +132,7 @@ def extract_data_from_image(
                     },
                     {
                         "type": "text",
-                        "text": "Extract all training data fields from this document.",
+                        "text": "Extract all training data fields from this document page.",
                     },
                 ],
             }
@@ -99,49 +140,77 @@ def extract_data_from_image(
     )
 
     raw = message.content[0].text.strip()
-    # Strip accidental markdown fences
     raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
     raw = re.sub(r"\n?```$", "", raw)
 
     try:
         parsed = json.loads(raw)
-        # Normalise to a list so callers always get list[dict]
-        if isinstance(parsed, list):
-            return parsed
-        return [parsed]
+        return parsed if isinstance(parsed, list) else [parsed]
     except json.JSONDecodeError:
         return [{"_raw_response": raw}]
 
 
+# ---------------------------------------------------------------------------
+# Merge helpers
+# ---------------------------------------------------------------------------
+
 def merge_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Merge page-level records into one record per trainee.
 
-    Records sharing the same (class_number, trainee_name) key are merged by
-    taking the first non-null value for each field.  Records where both key
-    fields are null are kept as-is (they cannot be de-duplicated).
+    Strategy
+    --------
+    1. Records with ``_class_level: true`` supply class-wide fields
+       (class_number, dates, training_center).  These fields win over values
+       from individual pages, which often see only the session end-date.
+    2. All other records are grouped by normalised trainee_name and merged via
+       "first non-null wins" within each group.
+    3. Class-level fields are then applied on top of each merged individual
+       record (overwriting only the fields listed in config.CLASS_LEVEL_FIELDS).
     """
-    merged: dict[tuple, dict[str, Any]] = {}
-    ungrouped: list[dict[str, Any]] = []
+    class_info: dict[str, Any] = {}
+    by_name: dict[str, dict[str, Any]] = {}
 
     for record in records:
-        class_num = record.get("class_number")
-        name = record.get("trainee_name")
-
-        if class_num is None and name is None:
-            ungrouped.append(record)
+        # ── Class-level records (Training Check List pages) ──────────────
+        if record.get("_class_level"):
+            for k, v in record.items():
+                if not k.startswith("_") and v is not None and class_info.get(k) is None:
+                    class_info[k] = v
             continue
 
-        key = (class_num, name)
-        if key not in merged:
-            merged[key] = dict(record)
+        # ── Individual records ────────────────────────────────────────────
+        name_raw = (record.get("trainee_name") or "").strip()
+        if not name_raw:
+            continue  # cannot assign to a trainee → discard
+
+        key = name_raw.lower()
+        if key not in by_name:
+            by_name[key] = dict(record)
         else:
-            # Fill in any null fields from this record
-            for field, value in record.items():
-                if value is not None and merged[key].get(field) is None:
-                    merged[key][field] = value
+            # Fill missing fields from subsequent pages (first non-null wins)
+            for k, v in record.items():
+                if v is not None and by_name[key].get(k) is None:
+                    by_name[key][k] = v
 
-    return list(merged.values()) + ungrouped
+    # ── Apply class-level info to every individual record ─────────────────
+    result: list[dict[str, Any]] = []
+    for record in by_name.values():
+        final = dict(record)
+        for k, v in class_info.items():
+            if v is None:
+                continue
+            if k in config.CLASS_LEVEL_FIELDS:
+                final[k] = v          # class-level fields always win
+            elif final.get(k) is None:
+                final[k] = v          # fill other missing fields
+        result.append(final)
 
+    return result
+
+
+# ---------------------------------------------------------------------------
+# PDF-level entry point
+# ---------------------------------------------------------------------------
 
 def extract_data_from_pdf(
     pdf_path: str,
@@ -158,9 +227,16 @@ def extract_data_from_pdf(
     for page_num, img in enumerate(pdf_to_images(pdf_path), start=1):
         if status_callback:
             status_callback(f"페이지 {page_num} 처리 중...")
+
         records = extract_data_from_image(img, client=client)
         for record in records:
             if record.get("_skip"):
+                continue
+            if "_raw_response" in record:
+                print(
+                    f"[WARN] 파싱 실패 (페이지 {page_num}): "
+                    f"{record['_raw_response'][:120]}"
+                )
                 continue
             record["_source_page"] = page_num
             record["_source_file"] = str(pdf_path)
