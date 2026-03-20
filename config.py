@@ -10,7 +10,10 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = "claude-opus-4-6"
 
 # PDF processing
-PDF_DPI = 200  # Resolution for PDF-to-image conversion
+PDF_DPI = 400  # 400 DPI: optimal for checkbox/handwriting recognition (vs 200 DPI default)
+
+# OCR mode: "claude" (API, highest accuracy) | "local" (PaddleOCR+OpenCV, no API key)
+OCR_MODE = "claude"
 
 # ---------------------------------------------------------------------------
 # Column index helper
