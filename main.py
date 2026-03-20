@@ -10,7 +10,8 @@ Workflow:
 from __future__ import annotations
 
 import os
-os.environ.setdefault("FLAGS_enable_pir_api", "0")  # fix PaddlePaddle 3.x PIR error
+os.environ["FLAGS_enable_pir_api"] = "0"   # fix PaddlePaddle 3.x PIR error
+os.environ["PADDLE_PIR_MODE"] = "0"
 
 import threading
 import tkinter as tk
