@@ -37,8 +37,11 @@ def _get_paddle():
         try:
             _paddle = PaddleOCR(use_angle_cls=True, lang="korean", show_log=False)
         except TypeError:
-            # Newer PaddleOCR versions removed show_log parameter
-            _paddle = PaddleOCR(use_angle_cls=True, lang="korean")
+            try:
+                _paddle = PaddleOCR(use_angle_cls=True, lang="korean")
+            except TypeError:
+                # PaddleOCR 3.x: use_angle_cls also removed
+                _paddle = PaddleOCR(lang="korean")
         logging.disable(logging.NOTSET)
     return _paddle
 
@@ -46,19 +49,52 @@ def _get_paddle():
 def _run_ocr(img: Image.Image) -> list[dict]:
     """Run PaddleOCR; return list of {text, conf, x1, y1, x2, y2}."""
     arr = np.array(img.convert("RGB"))
-    result = _get_paddle().ocr(arr, cls=True)
+    paddle = _get_paddle()
+
+    # Try old API first (PaddleOCR 2.x), fall back to new API (3.x)
+    try:
+        result = paddle.ocr(arr, cls=True)
+    except TypeError:
+        try:
+            result = paddle.ocr(arr)
+        except Exception:
+            result = paddle.predict(arr)
+
     items: list[dict] = []
-    if not result or not result[0]:
+    if not result:
         return items
-    for line in result[0]:
-        pts, (text, conf) = line
-        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
-        items.append({
-            "text": text.strip(),
-            "conf": float(conf),
-            "x1": float(min(xs)), "y1": float(min(ys)),
-            "x2": float(max(xs)), "y2": float(max(ys)),
-        })
+
+    # PaddleOCR 3.x returns list of dicts; 2.x returns list of list of lines
+    first = result[0]
+    if isinstance(first, dict):
+        # New API: result[0] = {'rec_texts': [...], 'rec_scores': [...], 'rec_boxes': [...]}
+        texts = first.get("rec_texts", [])
+        scores = first.get("rec_scores", [])
+        boxes = first.get("rec_boxes", [])
+        for text, conf, box in zip(texts, scores, boxes):
+            if isinstance(box[0], (list, tuple)):
+                xs = [p[0] for p in box]
+                ys = [p[1] for p in box]
+            else:
+                xs = [box[0], box[2]]
+                ys = [box[1], box[3]]
+            items.append({
+                "text": str(text).strip(),
+                "conf": float(conf),
+                "x1": float(min(xs)), "y1": float(min(ys)),
+                "x2": float(max(xs)), "y2": float(max(ys)),
+            })
+    else:
+        # Old API: result[0] = [[pts, (text, conf)], ...]
+        for line in first:
+            pts, (text, conf) = line
+            xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+            items.append({
+                "text": text.strip(),
+                "conf": float(conf),
+                "x1": float(min(xs)), "y1": float(min(ys)),
+                "x2": float(max(xs)), "y2": float(max(ys)),
+            })
     return items
 
 
