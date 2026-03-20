@@ -32,7 +32,18 @@ def _get_paddle():
     global _paddle
     if _paddle is None:
         import logging
+        import sys
         logging.disable(logging.WARNING)
+
+        # If PyTorch is installed but its DLLs are broken (WinError 127 on shm.dll),
+        # paddle startup will crash.  Pre-import torch so that any OSError is caught
+        # here; if it fails we inject a stub so paddle's optional-torch check passes.
+        if "torch" not in sys.modules:
+            try:
+                import torch  # noqa: F401
+            except (OSError, ImportError):
+                from unittest.mock import MagicMock
+                sys.modules["torch"] = MagicMock()
 
         # Disable PIR mode and OneDNN at the Paddle C++ level before loading models.
         # PaddlePaddle 3.x OneDNN + PIR causes:
