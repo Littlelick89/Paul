@@ -11,6 +11,8 @@ Estimated accuracy at 400 DPI: ~73-78 % for this document type.
 from __future__ import annotations
 
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import cv2
@@ -26,11 +28,16 @@ from ocr_extractor import merge_records  # reuse existing merge logic
 # ─────────────────────────────────────────────────────────────────────────────
 
 _paddle: Any = None
+_paddle_lock = threading.Lock()
 
 
 def _get_paddle():
     global _paddle
-    if _paddle is None:
+    if _paddle is not None:
+        return _paddle
+    with _paddle_lock:
+        if _paddle is not None:          # re-check after acquiring lock
+            return _paddle
         import logging
         import sys
         logging.disable(logging.WARNING)
@@ -552,19 +559,48 @@ def extract_data_from_pdf_local(
     pdf_path: str,
     status_callback=None,
 ) -> list[dict[str, Any]]:
-    """Process every page with local OCR; return one merged record per trainee."""
+    """Process every page with local OCR; return one merged record per trainee.
+
+    Pages are processed in parallel using a thread pool.  PaddleOCR's C++
+    inference engine releases the GIL, so threads give real concurrency here.
+    The model is pre-warmed (single-threaded) before the pool starts so that
+    all threads share the already-initialised singleton without racing.
+    """
+    import os
     from pdf_processor import pdf_to_images
 
+    # Load all pages upfront (fast – poppler is not the bottleneck).
+    pages = list(pdf_to_images(pdf_path))
+    total = len(pages)
+
+    # Pre-warm the OCR model once before spawning threads.
+    _get_paddle()
+
+    # Number of worker threads: default to CPU count, capped at page count.
+    n_workers = min(os.cpu_count() or 2, total, 4)
+
+    # Collect (page_num, records) pairs from each worker.
+    futures_map: dict = {}
     page_records: list[dict[str, Any]] = []
-    for page_num, img in enumerate(pdf_to_images(pdf_path), start=1):
+
+    def _process(args: tuple[int, Any]) -> tuple[int, list[dict]]:
+        page_num, img = args
         if status_callback:
-            status_callback(f"페이지 {page_num} 처리 중... (로컬 OCR)")
-        records = extract_data_from_image_local(img)
-        for rec in records:
-            if rec.get("_skip"):
-                continue
-            rec["_source_page"] = page_num
-            rec["_source_file"] = str(pdf_path)
-            page_records.append(rec)
+            status_callback(f"페이지 {page_num}/{total} 처리 중... (로컬 OCR)")
+        return page_num, extract_data_from_image_local(img)
+
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures_map = {
+            pool.submit(_process, (i, img)): i
+            for i, img in enumerate(pages, start=1)
+        }
+        for future in as_completed(futures_map):
+            page_num, records = future.result()
+            for rec in records:
+                if rec.get("_skip"):
+                    continue
+                rec["_source_page"] = page_num
+                rec["_source_file"] = str(pdf_path)
+                page_records.append(rec)
 
     return merge_records(page_records)

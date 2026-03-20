@@ -10,7 +10,8 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = "claude-opus-4-6"
 
 # PDF processing
-PDF_DPI = 400  # 400 DPI: optimal for checkbox/handwriting recognition (vs 200 DPI default)
+PDF_DPI = 200  # 200 DPI: sufficient for PaddleOCR + checkbox detection; 400 DPI was 4× larger
+               # than PaddleOCR's internal 4000 px limit and wasted processing time.
 
 # OCR mode: "claude" (API, highest accuracy) | "local" (PaddleOCR+OpenCV, no API key)
 OCR_MODE = "claude"
