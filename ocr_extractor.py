@@ -112,32 +112,39 @@ def extract_data_from_image(
     if client is None:
         client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
-    b64 = image_to_base64(img)
+    # Send as JPEG (quality=90) — typically 5-10× smaller than PNG for scanned
+    # documents, keeping well under the Anthropic 5 MB per-image limit.
+    b64 = image_to_base64(img, fmt="JPEG")
 
-    message = client.messages.create(
-        model=config.CLAUDE_MODEL,
-        max_tokens=4096,
-        system=_SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": b64,
+    try:
+        message = client.messages.create(
+            model=config.CLAUDE_MODEL,
+            max_tokens=4096,
+            system=_SYSTEM_PROMPT,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": b64,
+                            },
                         },
-                    },
-                    {
-                        "type": "text",
-                        "text": "Extract all training data fields from this document page.",
-                    },
-                ],
-            }
-        ],
-    )
+                        {
+                            "type": "text",
+                            "text": "Extract all training data fields from this document page.",
+                        },
+                    ],
+                }
+            ],
+        )
+    except anthropic.BadRequestError as exc:
+        # Surface the real reason for the 400 so it shows up in the UI/log.
+        print(f"[ERROR] Claude API 400: {exc}")
+        return [{"_skip": True}]
 
     raw = message.content[0].text.strip()
     raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)

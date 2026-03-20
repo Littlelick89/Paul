@@ -52,7 +52,16 @@ def pdf_to_images(pdf_path: str | Path) -> Generator[Image.Image, None, None]:
 
 
 def image_to_base64(img: Image.Image, fmt: str = "PNG") -> str:
-    """Return a base64-encoded string of *img* suitable for the Claude API."""
+    """Return a base64-encoded string of *img* suitable for the Claude API.
+
+    When *fmt* is ``"JPEG"``, the image is converted to RGB first (JPEG does
+    not support alpha) and saved at quality=90, which is 5-10× smaller than
+    an equivalent PNG for typical document scans.
+    """
     buf = io.BytesIO()
-    img.save(buf, format=fmt)
+    if fmt.upper() == "JPEG":
+        img = img.convert("RGB")
+        img.save(buf, format="JPEG", quality=90)
+    else:
+        img.save(buf, format=fmt)
     return base64.standard_b64encode(buf.getvalue()).decode()
