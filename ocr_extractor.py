@@ -10,7 +10,7 @@ import anthropic
 from PIL import Image
 
 import config
-from pdf_processor import image_to_base64
+from pdf_processor import image_to_base64_with_type
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -112,9 +112,8 @@ def extract_data_from_image(
     if client is None:
         client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
-    # Send as JPEG (quality=90) — typically 5-10× smaller than PNG for scanned
-    # documents, keeping well under the Anthropic 5 MB per-image limit.
-    b64 = image_to_base64(img, fmt="JPEG")
+    # PNG first (lossless); auto-falls back to JPEG only if PNG > 4 MB.
+    b64, media_type = image_to_base64_with_type(img)
 
     try:
         message = client.messages.create(
@@ -129,7 +128,7 @@ def extract_data_from_image(
                             "type": "image",
                             "source": {
                                 "type": "base64",
-                                "media_type": "image/jpeg",
+                                "media_type": media_type,
                                 "data": b64,
                             },
                         },

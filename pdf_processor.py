@@ -51,17 +51,47 @@ def pdf_to_images(pdf_path: str | Path) -> Generator[Image.Image, None, None]:
         yield page
 
 
+_API_IMAGE_LIMIT = 4 * 1024 * 1024  # 4 MB (Anthropic hard limit is 5 MB)
+
+
+def image_to_base64_with_type(img: Image.Image) -> tuple[str, str]:
+    """Return (base64_data, media_type) for the Claude API.
+
+    Tries PNG first; falls back to JPEG if the PNG exceeds *_API_IMAGE_LIMIT*.
+    Returns the appropriate ``media_type`` string alongside the encoded data.
+    """
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="PNG")
+    if buf.tell() <= _API_IMAGE_LIMIT:
+        return base64.standard_b64encode(buf.getvalue()).decode(), "image/png"
+
+    for quality in (95, 85, 75):
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=quality)
+        if buf.tell() <= _API_IMAGE_LIMIT:
+            break
+
+    return base64.standard_b64encode(buf.getvalue()).decode(), "image/jpeg"
+
+
 def image_to_base64(img: Image.Image, fmt: str = "PNG") -> str:
     """Return a base64-encoded string of *img* suitable for the Claude API.
 
-    When *fmt* is ``"JPEG"``, the image is converted to RGB first (JPEG does
-    not support alpha) and saved at quality=90, which is 5-10× smaller than
-    an equivalent PNG for typical document scans.
+    Always tries PNG first (lossless, best quality).  If the PNG payload would
+    exceed *_API_IMAGE_LIMIT* bytes, falls back to JPEG quality=95 and then
+    quality=85 so the image stays within the Anthropic 5 MB per-image limit
+    while preserving as much detail as possible.
     """
     buf = io.BytesIO()
-    if fmt.upper() == "JPEG":
-        img = img.convert("RGB")
-        img.save(buf, format="JPEG", quality=90)
-    else:
-        img.save(buf, format=fmt)
+    img.convert("RGB").save(buf, format="PNG")
+    if buf.tell() <= _API_IMAGE_LIMIT:
+        return base64.standard_b64encode(buf.getvalue()).decode()
+
+    # PNG is too large — fall back to JPEG with decreasing quality.
+    for quality in (95, 85, 75):
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=quality)
+        if buf.tell() <= _API_IMAGE_LIMIT:
+            break
+
     return base64.standard_b64encode(buf.getvalue()).decode()
