@@ -242,6 +242,23 @@ class App(tk.Tk):
         total_written = 0
         try:
             self._log_write("\n[Local OCR] PaddleOCR 모델 로딩 중...")
+            # Eagerly check poppler before processing any file
+            from pdf_processor import _find_poppler
+            poppler = _find_poppler()
+            import shutil
+            if poppler is None and not shutil.which("pdftoppm"):
+                raise RuntimeError(
+                    "poppler를 찾을 수 없습니다.\n\n"
+                    "해결 방법:\n"
+                    "  1. https://github.com/oschwartz10612/poppler-windows/releases 에서\n"
+                    "     poppler-25.12.0_x86_64.7z 다운로드\n"
+                    "  2. 압축 해제 후 이 프로그램(main.py)과 같은 폴더에 복사\n"
+                    "     예)  training_extractor/\n"
+                    "          ├─ main.py\n"
+                    "          └─ poppler-25.12.0/\n"
+                    "               └─ bin/  ← pdftoppm.exe 등\n"
+                    "  3. 다시 실행"
+                )
             for pdf_path in self._pdf_paths:
                 self._log_write(f"\n[Local OCR] {Path(pdf_path).name}")
                 self._set_status(f"처리 중: {Path(pdf_path).name}")
