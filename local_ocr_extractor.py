@@ -35,9 +35,8 @@ def _get_paddle():
         import sys
         logging.disable(logging.WARNING)
 
-        # If PyTorch is installed but its DLLs are broken (WinError 127 on shm.dll),
-        # paddle startup will crash.  Pre-import torch so that any OSError is caught
-        # here; if it fails we inject a stub so paddle's optional-torch check passes.
+        # If PyTorch DLLs are broken (WinError 127 on shm.dll), pre-import and
+        # stub it out so paddle's optional-torch check does not crash.
         if "torch" not in sys.modules:
             try:
                 import torch  # noqa: F401
@@ -45,9 +44,7 @@ def _get_paddle():
                 from unittest.mock import MagicMock
                 sys.modules["torch"] = MagicMock()
 
-        # Disable PIR mode and OneDNN at the Paddle C++ level before loading models.
-        # PaddlePaddle 3.x OneDNN + PIR causes:
-        #   ConvertPirAttribute2RuntimeAttribute not support [pir::ArrayAttribute<pir::DoubleAttribute>]
+        # Disable PIR mode + OneDNN before paddle initialises (PaddlePaddle 3.x bug).
         try:
             import paddle
             paddle.set_flags({"FLAGS_enable_pir_api": False})
@@ -61,20 +58,24 @@ def _get_paddle():
 
         from paddleocr import PaddleOCR  # type: ignore
 
-        # Try initialising with OneDNN disabled (enable_mkldnn=False) first.
-        # Fall back progressively for older/newer PaddleOCR APIs.
-        try:
-            _paddle = PaddleOCR(use_angle_cls=True, lang="korean",
-                                show_log=False, enable_mkldnn=False)
-        except TypeError:
+        # Candidate argument sets, from richest (2.x) to minimal (3.x).
+        # Catch ALL exceptions so that "Unknown argument: X" style errors are
+        # also handled, not just TypeError.
+        _init_candidates = [
+            {"use_angle_cls": True, "lang": "korean", "show_log": False, "enable_mkldnn": False},
+            {"use_angle_cls": True, "lang": "korean", "show_log": False},
+            {"use_angle_cls": True, "lang": "korean"},
+            {"lang": "korean"},
+        ]
+        last_exc: Exception | None = None
+        for kwargs in _init_candidates:
             try:
-                _paddle = PaddleOCR(use_angle_cls=True, lang="korean",
-                                    enable_mkldnn=False)
-            except TypeError:
-                try:
-                    _paddle = PaddleOCR(lang="korean", enable_mkldnn=False)
-                except TypeError:
-                    _paddle = PaddleOCR(lang="korean")
+                _paddle = PaddleOCR(**kwargs)
+                break
+            except Exception as exc:
+                last_exc = exc
+        if _paddle is None:
+            raise RuntimeError(f"PaddleOCR 초기화 실패: {last_exc}")
 
         logging.disable(logging.NOTSET)
     return _paddle
@@ -85,17 +86,21 @@ def _run_ocr(img: Image.Image) -> list[dict]:
     arr = np.array(img.convert("RGB"))
     paddle = _get_paddle()
 
-    # Try old API first (PaddleOCR 2.x), fall back to new API (3.x)
-    try:
-        result = paddle.ocr(arr, cls=True)
-    except TypeError:
+    # Try 2.x API first (ocr + cls), then 3.x API (ocr / predict).
+    result = None
+    for call in [
+        lambda: paddle.ocr(arr, cls=True),
+        lambda: paddle.ocr(arr),
+        lambda: paddle.predict(arr),
+    ]:
         try:
-            result = paddle.ocr(arr)
+            result = call()
+            break
         except Exception:
-            result = paddle.predict(arr)
+            continue
 
     items: list[dict] = []
-    if not result:
+    if result is None or len(result) == 0:
         return items
 
     # PaddleOCR 3.x returns list of dicts; 2.x returns list of list of lines
