@@ -36,8 +36,10 @@ def _find_poppler() -> str | None:
     return None              # Will raise a clear error from pdf2image
 
 
-def pdf_to_images(pdf_path: str | Path) -> Generator[Image.Image, None, None]:
-    """Yield one PIL Image per page of *pdf_path* at the configured DPI.
+def pdf_to_images(pdf_path: str | Path, dpi: int | None = None) -> Generator[Image.Image, None, None]:
+    """Yield one PIL Image per page of *pdf_path* at the specified DPI.
+
+    *dpi* defaults to ``config.PDF_DPI_CLAUDE`` when not given.
 
     Poppler is located automatically:
       1. Checked in common local directories (see _POPPLER_SEARCH_DIRS).
@@ -45,8 +47,10 @@ def pdf_to_images(pdf_path: str | Path) -> Generator[Image.Image, None, None]:
     """
     from pdf2image import convert_from_path  # late import: app loads without poppler
 
+    if dpi is None:
+        dpi = config.PDF_DPI_CLAUDE
     poppler_path = _find_poppler()
-    pages = convert_from_path(str(pdf_path), dpi=config.PDF_DPI, poppler_path=poppler_path)
+    pages = convert_from_path(str(pdf_path), dpi=dpi, poppler_path=poppler_path)
     for page in pages:
         yield page
 

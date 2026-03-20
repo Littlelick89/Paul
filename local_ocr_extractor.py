@@ -570,7 +570,7 @@ def extract_data_from_pdf_local(
     from pdf_processor import pdf_to_images
 
     # Load all pages upfront (fast – poppler is not the bottleneck).
-    pages = list(pdf_to_images(pdf_path))
+    pages = list(pdf_to_images(pdf_path, dpi=config.PDF_DPI_LOCAL))
     total = len(pages)
 
     # Pre-warm the OCR model once before spawning threads.

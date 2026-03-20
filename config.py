@@ -9,11 +9,11 @@ load_dotenv()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = "claude-opus-4-6"
 
-# PDF processing
-PDF_DPI = 200  # 200 DPI: sufficient for PaddleOCR + checkbox detection; 400 DPI was 4× larger
-               # than PaddleOCR's internal 4000 px limit and wasted processing time.
+# PDF processing — separate DPI per OCR mode
+PDF_DPI_CLAUDE = 300  # Claude vision API: higher DPI improves checkbox/text detail
+PDF_DPI_LOCAL  = 200  # PaddleOCR: 200 DPI stays within the 4000 px internal limit
 
-# OCR mode: "claude" (API, highest accuracy) | "local" (PaddleOCR+OpenCV, no API key)
+# OCR mode: "claude" (API) | "local" (PaddleOCR+OpenCV) | "hybrid" (Claude text + OpenCV checkboxes)
 OCR_MODE = "claude"
 
 # ---------------------------------------------------------------------------

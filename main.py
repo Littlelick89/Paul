@@ -67,6 +67,11 @@ class App(tk.Tk):
             variable=self._ocr_mode, value="local",
             command=self._on_mode_change,
         ).pack(side="left", padx=10, pady=4)
+        ttk.Radiobutton(
+            frm_mode, text="⚡  Hybrid  (Claude 텍스트 + OpenCV 체크박스)",
+            variable=self._ocr_mode, value="hybrid",
+            command=self._on_mode_change,
+        ).pack(side="left", padx=10, pady=4)
 
         # --- API Key (hidden in local mode) ---
         self._frm_api = ttk.LabelFrame(self, text="Claude API Key")
@@ -139,7 +144,7 @@ class App(tk.Tk):
         if self._ocr_mode.get() == "local":
             self._frm_api.grid_remove()
         else:
-            self._frm_api.grid()
+            self._frm_api.grid()  # "claude" and "hybrid" both need an API key
 
     # ------------------------------------------------------------------
     # File pickers
@@ -201,16 +206,15 @@ class App(tk.Tk):
 
         mode = self._ocr_mode.get()
 
-        if mode == "claude":
+        if mode in ("claude", "hybrid"):
             api_key = self._api_key.get().strip()
             if not _validate_api_key(api_key):
                 messagebox.showerror("오류", "유효한 Claude API Key를 입력하세요 (sk-ant- 로 시작).")
                 return
             self._start_btn.configure(state="disabled")
             self._progress.start(10)
-            threading.Thread(
-                target=self._run_claude, args=(api_key,), daemon=True
-            ).start()
+            target = self._run_claude if mode == "claude" else self._run_hybrid
+            threading.Thread(target=target, args=(api_key,), daemon=True).start()
         else:
             self._start_btn.configure(state="disabled")
             self._progress.start(10)
@@ -227,6 +231,29 @@ class App(tk.Tk):
                 self._log_write(f"\n[Claude] {Path(pdf_path).name}")
                 self._set_status(f"처리 중: {Path(pdf_path).name}")
                 records = extract_data_from_pdf(
+                    pdf_path, client=client,
+                    status_callback=lambda m: (self._log_write(f"  {m}"), self._set_status(m)),
+                )
+                self._log_write(f"  → {len(records)}명 추출")
+                written = write_records(records, self._excel_path.get(),
+                                        sheet_name=self._sheet_name.get() or None)
+                total_written += written
+                self._log_write(f"  → Excel {written}행 기록")
+            self._finish(total_written)
+        except Exception as exc:
+            self._error(exc)
+
+    def _run_hybrid(self, api_key: str):
+        import anthropic
+        from ocr_extractor import extract_data_from_pdf_hybrid
+
+        client = anthropic.Anthropic(api_key=api_key)
+        total_written = 0
+        try:
+            for pdf_path in self._pdf_paths:
+                self._log_write(f"\n[Hybrid] {Path(pdf_path).name}")
+                self._set_status(f"처리 중: {Path(pdf_path).name}")
+                records = extract_data_from_pdf_hybrid(
                     pdf_path, client=client,
                     status_callback=lambda m: (self._log_write(f"  {m}"), self._set_status(m)),
                 )

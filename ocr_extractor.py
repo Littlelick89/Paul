@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 import anthropic
-from PIL import Image
+from PIL import Image, ImageEnhance
 
 import config
 from pdf_processor import image_to_base64_with_type
@@ -26,6 +26,9 @@ RESPONSE FORMAT
 • Single JSON object  → page has data for ONE trainee
 • JSON array          → page has data for MULTIPLE trainees (one object per person)
 • {"_skip": true}     → blank page or page with no extractable data
+
+ALWAYS include "_page_type" in every non-skip response.
+  "_page_type": one of "CHECKLIST" | "EVAL" | "SURVEY_S1" | "SURVEY_S2" | "EXAM" | "SURVEY_S3" | "UNKNOWN"
 
 SPECIAL CASE — Training Check List / Preparation & Finishing Check List
   These pages show a table of topics with columns of checkmarks for the whole class.
@@ -99,49 +102,154 @@ IMPORTANT RULES
   Section II is a grid/table format. They are on different pages or clearly separated.
 """
 
+# ---------------------------------------------------------------------------
+# Page-type detection
+# ---------------------------------------------------------------------------
+
+_TYPE_KW: dict[str, list[str]] = {
+    "CHECKLIST":  ["Training Check List", "Preparation", "Finishing Check"],
+    "EXAM":       ["Training Examination", "READ BELOW INSTRUCTIONS"],
+    "EVAL":       ["Evaluation of Training", "General Assessment"],
+    "SURVEY_S1":  ["SURVEY OF TRAINING", "설문조사", "설문 조사"],
+    "SURVEY_S2":  ["중요하지 않다", "매우 중요하다", "보통이다"],
+    "SURVEY_S3":  ["Coherent 교육과정", "Coherent 장비", "KEP 서비스", "Thank You"],
+}
+
+
+def _guess_page_type(records: list[dict]) -> str:
+    """Infer page type from Claude's own _page_type field, then heuristics."""
+    for r in records:
+        pt = r.get("_page_type", "")
+        if pt and pt not in ("", "UNKNOWN"):
+            return pt
+    # Heuristic fallback
+    r0 = records[0] if records else {}
+    if r0.get("_class_level"):
+        return "CHECKLIST"
+    if any(r0.get(f"eval_q{i}") is not None for i in range(1, 16)):
+        return "EVAL"
+    if any(r0.get(f"survey_q{i}") is not None for i in range(10, 40)):
+        return "SURVEY_S2"
+    if any(r0.get(f"survey_q{i}") is not None for i in range(1, 9)):
+        return "SURVEY_S1"
+    return "UNKNOWN"
+
 
 # ---------------------------------------------------------------------------
-# Core extraction
+# Page-type specific retry hints
 # ---------------------------------------------------------------------------
 
-def extract_data_from_image(
-    img: Image.Image,
-    client: anthropic.Anthropic | None = None,
+_PAGE_HINTS: dict[str, str] = {
+    "EVAL": (
+        "This is an [Evaluation of Training Course] page.\n"
+        "PRIORITY: Extract eval_q1 through eval_q15 (Q1–Q15 checkbox scores 1–5).\n"
+        "The checkbox grid has 15 rows × 5 columns. For EVERY row, locate the marked cell "
+        "(✓, ✗, ■, filled circle, handwritten mark) and record its 1-based column number.\n"
+        "Also extract comment_q16, comment_q17, comment_q18 from open-text areas.\n"
+        "A zoomed crop of the checkbox area is provided as the second image — use it for precise column detection."
+    ),
+    "SURVEY_S1": (
+        "This is a [Survey of Training — Section I] page.\n"
+        "PRIORITY: Extract survey_q1 through survey_q8 (selected option number) "
+        "and survey_q9_1 through survey_q9_5 (1=checked, 0=not checked).\n"
+        "A zoomed crop of the checkbox area is provided as the second image — use it.\n"
+        "Also extract header fields: trainee_name, course dates, class_number."
+    ),
+    "SURVEY_S2": (
+        "This is a [Survey of Training — Section II Likert table] page.\n"
+        "PRIORITY: Extract survey_q10 through survey_q39 (30 rows × 5 columns).\n"
+        "For EVERY row find the marked cell and record its column number (1–5). "
+        "Do NOT skip rows — use null only when truly unmarked.\n"
+        "A zoomed crop of the Likert table is provided as the second image — use it for precise column detection."
+    ),
+    "CHECKLIST": (
+        "This is a [Training Check List] page.\n"
+        "Extract ONLY class-level fields: class_number, course_begin_date, course_end_date, training_center.\n"
+        "Set _class_level to true. Do NOT create per-trainee records."
+    ),
+}
+
+_DEFAULT_HINT = "Extract all training data fields from this document page."
+
+# ---------------------------------------------------------------------------
+# Checkbox crop regions  (x1_frac, y1_frac, x2_frac, y2_frac)
+# ---------------------------------------------------------------------------
+
+_CHECKBOX_CROP: dict[str, tuple[float, float, float, float]] = {
+    "EVAL":      (0.42, 0.16, 1.00, 0.74),
+    "SURVEY_S1": (0.00, 0.16, 0.48, 0.92),
+    "SURVEY_S2": (0.40, 0.14, 1.00, 0.98),
+}
+
+# ---------------------------------------------------------------------------
+# Image helpers
+# ---------------------------------------------------------------------------
+
+
+def _enhance_contrast(img: Image.Image, factor: float = 2.5) -> Image.Image:
+    """Boost contrast to make checkbox marks more visible."""
+    gray = img.convert("L")
+    return ImageEnhance.Contrast(gray).enhance(factor).convert("RGB")
+
+
+def _crop_region(
+    img: Image.Image, x1f: float, y1f: float, x2f: float, y2f: float
+) -> Image.Image:
+    """Crop image by fractional (0–1) coordinates."""
+    W, H = img.size
+    return img.crop((int(x1f * W), int(y1f * H), int(x2f * W), int(y2f * H)))
+
+
+# ---------------------------------------------------------------------------
+# Null-ratio check
+# ---------------------------------------------------------------------------
+
+
+def _checkbox_null_ratio(records: list[dict], page_type: str) -> float:
+    """Return fraction of expected checkbox fields that are null."""
+    if page_type == "EVAL":
+        fields = [f"eval_q{i}" for i in range(1, 16)]
+    elif page_type == "SURVEY_S1":
+        fields = [f"survey_q{i}" for i in range(1, 9)]
+    elif page_type == "SURVEY_S2":
+        fields = [f"survey_q{i}" for i in range(10, 40)]
+    else:
+        return 0.0
+
+    values = [r.get(f) for r in records for f in fields]
+    if not values:
+        return 0.0
+    return sum(1 for v in values if v is None) / len(values)
+
+
+# ---------------------------------------------------------------------------
+# Core Claude API call
+# ---------------------------------------------------------------------------
+
+
+def _call_claude(
+    images: list[Image.Image],
+    client: anthropic.Anthropic,
+    hint: str = _DEFAULT_HINT,
 ) -> list[dict[str, Any]]:
-    """Send *img* to Claude vision and return a list of extracted field dicts."""
-    if client is None:
-        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-
-    # PNG first (lossless); auto-falls back to JPEG only if PNG > 4 MB.
-    b64, media_type = image_to_base64_with_type(img)
+    """Send one or more images to Claude and return parsed records."""
+    content: list[dict] = []
+    for img in images:
+        b64, media_type = image_to_base64_with_type(img)
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": b64},
+        })
+    content.append({"type": "text", "text": hint})
 
     try:
         message = client.messages.create(
             model=config.CLAUDE_MODEL,
             max_tokens=4096,
             system=_SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": b64,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": "Extract all training data fields from this document page.",
-                        },
-                    ],
-                }
-            ],
+            messages=[{"role": "user", "content": content}],
         )
     except anthropic.BadRequestError as exc:
-        # Surface the real reason for the 400 so it shows up in the UI/log.
         print(f"[ERROR] Claude API 400: {exc}")
         return [{"_skip": True}]
 
@@ -157,8 +265,121 @@ def extract_data_from_image(
 
 
 # ---------------------------------------------------------------------------
-# Merge helpers
+# Main extraction with retry logic
 # ---------------------------------------------------------------------------
+
+
+def extract_data_from_image(
+    img: Image.Image,
+    client: anthropic.Anthropic | None = None,
+) -> list[dict[str, Any]]:
+    """Send *img* to Claude vision and return a list of extracted field dicts.
+
+    Improvement pipeline:
+      Pass 1 — full page, generic hint.
+      If checkbox null-ratio > 50 %:
+        Pass 2 — full page + contrast-enhanced checkbox crop, type-specific hint.
+    """
+    if client is None:
+        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+
+    # ── Pass 1: generic extraction ────────────────────────────────────────
+    records = _call_claude([img], client, hint=_DEFAULT_HINT)
+
+    if not records or all(r.get("_skip") for r in records):
+        return records
+
+    # ── Detect page type from Claude's own _page_type field ───────────────
+    page_type = _guess_page_type(records)
+
+    # ── Check null ratio; retry if needed ─────────────────────────────────
+    null_ratio = _checkbox_null_ratio(records, page_type)
+    if null_ratio > 0.5 and page_type in _PAGE_HINTS:
+        print(
+            f"[RETRY] null_ratio={null_ratio:.0%} on {page_type} page "
+            "— retrying with crop + contrast"
+        )
+        images = [img]
+        if page_type in _CHECKBOX_CROP:
+            crop = _crop_region(img, *_CHECKBOX_CROP[page_type])
+            images.append(_enhance_contrast(crop))
+
+        records = _call_claude(images, client, hint=_PAGE_HINTS[page_type])
+
+    return records
+
+
+# ---------------------------------------------------------------------------
+# Hybrid extraction  (Claude text fields + OpenCV checkboxes)
+# ---------------------------------------------------------------------------
+
+
+def extract_data_from_image_hybrid(
+    img: Image.Image,
+    client: anthropic.Anthropic | None = None,
+) -> list[dict[str, Any]]:
+    """Hybrid mode: Claude API for text fields, PaddleOCR+OpenCV for checkboxes.
+
+    Each engine does what it is best at:
+      • Claude  → trainee_name, dates, comments, course info  (high accuracy)
+      • OpenCV  → eval_q1–q15, survey_q1–q39  (pixel-level mark detection)
+
+    Requires PaddleOCR + OpenCV to be installed (same as "local" mode).
+    Falls back to Claude-only if local OCR is unavailable.
+    """
+    if client is None:
+        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+
+    _CHECKBOX_FIELDS = (
+        {f"eval_q{i}" for i in range(1, 16)}
+        | {f"survey_q{i}" for i in range(1, 10)}
+        | {f"survey_q9_{i}" for i in range(1, 6)}
+        | {f"survey_q{i}" for i in range(10, 40)}
+    )
+
+    # ── Step 1: Claude extracts text/header fields ─────────────────────────
+    text_hint = (
+        "Extract ONLY text/header fields: trainee_name, class_number, course_begin_date, "
+        "course_end_date, training_center, trainee_type, trainee_account, "
+        "training_course_description, comment_q16, comment_q17, comment_q18, "
+        "_class_level, _page_type.\n"
+        "Set ALL checkbox/score fields (eval_q*, survey_q*) to null — "
+        "they will be detected separately by a local vision engine."
+    )
+    claude_records = _call_claude([img], client, hint=text_hint)
+
+    if not claude_records or all(r.get("_skip") for r in claude_records):
+        return claude_records
+
+    page_type = _guess_page_type(claude_records)
+
+    # ── Step 2: local OCR extracts checkboxes ─────────────────────────────
+    try:
+        from local_ocr_extractor import extract_data_from_image_local  # lazy — avoids circular import
+        local_records = extract_data_from_image_local(img)
+    except Exception as exc:
+        print(f"[HYBRID] Local OCR unavailable: {exc} — falling back to Claude-only")
+        return claude_records
+
+    # ── Step 3: merge — Claude text + OpenCV checkboxes ───────────────────
+    merged: list[dict[str, Any]] = []
+    for i, crec in enumerate(claude_records):
+        rec = dict(crec)
+        # Pick the matching local record (by index); if none, use first
+        lrec = local_records[i] if i < len(local_records) else (local_records[0] if local_records else {})
+        for k in _CHECKBOX_FIELDS:
+            local_val = lrec.get(k)
+            if local_val is not None:
+                rec[k] = local_val
+        merged.append(rec)
+
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# Merge helpers  (shared with local_ocr_extractor)
+# ---------------------------------------------------------------------------
+
 
 def merge_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Merge page-level records into one record per trainee.
@@ -215,26 +436,60 @@ def merge_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# PDF-level entry point
+# PDF-level entry points
 # ---------------------------------------------------------------------------
+
 
 def extract_data_from_pdf(
     pdf_path: str,
     client: anthropic.Anthropic | None = None,
     status_callback=None,
 ) -> list[dict[str, Any]]:
-    """Process every page of *pdf_path* and return one merged record per trainee."""
+    """Process every page of *pdf_path* with Claude API; return one merged record per trainee."""
     from pdf_processor import pdf_to_images
 
     if client is None:
         client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
     page_records: list[dict[str, Any]] = []
-    for page_num, img in enumerate(pdf_to_images(pdf_path), start=1):
+    for page_num, img in enumerate(pdf_to_images(pdf_path, dpi=config.PDF_DPI_CLAUDE), start=1):
         if status_callback:
-            status_callback(f"페이지 {page_num} 처리 중...")
+            status_callback(f"페이지 {page_num} 처리 중... (Claude API, {config.PDF_DPI_CLAUDE} DPI)")
 
         records = extract_data_from_image(img, client=client)
+        for record in records:
+            if record.get("_skip"):
+                continue
+            if "_raw_response" in record:
+                print(
+                    f"[WARN] 파싱 실패 (페이지 {page_num}): "
+                    f"{record['_raw_response'][:120]}"
+                )
+                continue
+            record["_source_page"] = page_num
+            record["_source_file"] = str(pdf_path)
+            page_records.append(record)
+
+    return merge_records(page_records)
+
+
+def extract_data_from_pdf_hybrid(
+    pdf_path: str,
+    client: anthropic.Anthropic | None = None,
+    status_callback=None,
+) -> list[dict[str, Any]]:
+    """Process every page with Hybrid mode (Claude text + OpenCV checkboxes)."""
+    from pdf_processor import pdf_to_images
+
+    if client is None:
+        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+
+    page_records: list[dict[str, Any]] = []
+    for page_num, img in enumerate(pdf_to_images(pdf_path, dpi=config.PDF_DPI_CLAUDE), start=1):
+        if status_callback:
+            status_callback(f"페이지 {page_num} 처리 중... (Hybrid)")
+
+        records = extract_data_from_image_hybrid(img, client=client)
         for record in records:
             if record.get("_skip"):
                 continue
