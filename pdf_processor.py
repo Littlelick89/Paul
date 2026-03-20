@@ -17,7 +17,8 @@ import config
 # Directories to search for poppler on Windows (in priority order).
 # Add or change these if your poppler is installed elsewhere.
 _POPPLER_SEARCH_DIRS: list[Path] = [
-    Path(__file__).parent / "poppler-25.12.0" / "bin",   # next to main.py
+    Path(__file__).parent / "bin",                        # ./bin  ← 현재 구조
+    Path(__file__).parent / "poppler-25.12.0" / "bin",
     Path(__file__).parent / "poppler" / "bin",
     Path(r"C:\Program Files\poppler\bin"),
     Path(r"C:\tools\poppler\bin"),
