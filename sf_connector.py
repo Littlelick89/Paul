@@ -1,6 +1,6 @@
 """Salesforce connection and data upload handler.
 
-Uses simple-salesforce with Connected App OAuth (Username-Password flow).
+Uses simple-salesforce with Username + Password + Security Token authentication.
 """
 
 from __future__ import annotations
@@ -8,8 +8,7 @@ from __future__ import annotations
 import math
 from typing import Callable
 
-from simple_salesforce import Salesforce, SalesforceLogin, SFType
-from simple_salesforce.exceptions import SalesforceAuthenticationFailed, SalesforceError
+from simple_salesforce import Salesforce, SFType
 
 import sf_config as cfg
 
@@ -25,11 +24,10 @@ class SalesforceConnector:
     # ------------------------------------------------------------------
 
     def connect(self) -> None:
-        """Authenticate with Salesforce via Connected App OAuth.
+        """Authenticate with Salesforce via Username + Password + Security Token.
 
         Raises:
             ValueError: If required credentials are missing from .env.
-            SalesforceAuthenticationFailed: If credentials are rejected.
         """
         missing = [
             name
@@ -37,8 +35,6 @@ class SalesforceConnector:
                 ("SF_USERNAME", cfg.SF_USERNAME),
                 ("SF_PASSWORD", cfg.SF_PASSWORD),
                 ("SF_SECURITY_TOKEN", cfg.SF_SECURITY_TOKEN),
-                ("SF_CONSUMER_KEY", cfg.SF_CONSUMER_KEY),
-                ("SF_CONSUMER_SECRET", cfg.SF_CONSUMER_SECRET),
             ]
             if not val
         ]
@@ -51,8 +47,6 @@ class SalesforceConnector:
             username=cfg.SF_USERNAME,
             password=cfg.SF_PASSWORD,
             security_token=cfg.SF_SECURITY_TOKEN,
-            consumer_key=cfg.SF_CONSUMER_KEY,
-            consumer_secret=cfg.SF_CONSUMER_SECRET,
             domain=cfg.SF_DOMAIN,
         )
 

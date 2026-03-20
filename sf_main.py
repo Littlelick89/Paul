@@ -90,17 +90,14 @@ class SalesforceUploaderApp(tk.Tk):
         r1 = tk.Frame(cred_frame); r1.pack(fill="x", pady=2)
         r2 = tk.Frame(cred_frame); r2.pack(fill="x", pady=2)
         r3 = tk.Frame(cred_frame); r3.pack(fill="x", pady=2)
-        r4 = tk.Frame(cred_frame); r4.pack(fill="x", pady=2)
 
-        self._username_var      = tk.StringVar(value=cfg.SF_USERNAME)
-        self._password_var      = tk.StringVar(value=cfg.SF_PASSWORD)
-        self._token_var         = tk.StringVar(value=cfg.SF_SECURITY_TOKEN)
-        self._consumer_key_var  = tk.StringVar(value=cfg.SF_CONSUMER_KEY)
+        self._username_var = tk.StringVar(value=cfg.SF_USERNAME)
+        self._password_var = tk.StringVar(value=cfg.SF_PASSWORD)
+        self._token_var    = tk.StringVar(value=cfg.SF_SECURITY_TOKEN)
 
         _cred_row(r1, "Username:",       self._username_var)
-        _cred_row(r2, "Password:",       self._password_var,     show="*")
-        _cred_row(r3, "Security Token:", self._token_var,        show="*")
-        _cred_row(r4, "Consumer Key:",   self._consumer_key_var, show="*")
+        _cred_row(r2, "Password:",       self._password_var, show="*")
+        _cred_row(r3, "Security Token:", self._token_var,    show="*")
 
         self._connect_btn = tk.Button(
             cred_frame, text="🔗  Salesforce 연결", command=self._connect
@@ -160,10 +157,9 @@ class SalesforceUploaderApp(tk.Tk):
 
     def _connect(self) -> None:
         # Update credentials from UI fields (user may have edited them)
-        cfg.SF_USERNAME        = self._username_var.get().strip()
-        cfg.SF_PASSWORD        = self._password_var.get().strip()
-        cfg.SF_SECURITY_TOKEN  = self._token_var.get().strip()
-        cfg.SF_CONSUMER_KEY    = self._consumer_key_var.get().strip()
+        cfg.SF_USERNAME       = self._username_var.get().strip()
+        cfg.SF_PASSWORD       = self._password_var.get().strip()
+        cfg.SF_SECURITY_TOKEN = self._token_var.get().strip()
 
         self._connect_btn.config(state="disabled", text="연결 중…")
         self._log_write("[Salesforce] 연결 시도 중…\n")
