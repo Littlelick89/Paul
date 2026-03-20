@@ -529,10 +529,15 @@ def _extract_survey_s2(items: list[dict], img: Image.Image) -> dict:
 # Public API  (mirrors ocr_extractor.py)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def extract_data_from_image_local(img: Image.Image) -> list[dict[str, Any]]:
+def extract_data_from_image_local(
+    img: Image.Image,
+    status_callback=None,
+) -> list[dict[str, Any]]:
     """Extract training data from one page using local OCR only."""
     items = _run_ocr(img)
     ptype = _page_type(items)
+    if status_callback:
+        status_callback(f"  → 텍스트 청크 {len(items)}개 인식 | 페이지 유형: {ptype}")
 
     if ptype in ("EXAM", "SURVEY_S3", "UNKNOWN"):
         return [{"_skip": True}]
@@ -587,7 +592,7 @@ def extract_data_from_pdf_local(
         page_num, img = args
         if status_callback:
             status_callback(f"페이지 {page_num}/{total} 처리 중... (로컬 OCR)")
-        return page_num, extract_data_from_image_local(img)
+        return page_num, extract_data_from_image_local(img, status_callback=status_callback)
 
     with ThreadPoolExecutor(max_workers=n_workers) as pool:
         futures_map = {

@@ -317,6 +317,7 @@ def extract_data_from_image(
 def extract_data_from_image_hybrid(
     img: Image.Image,
     client: anthropic.Anthropic | None = None,
+    status_callback=None,
 ) -> list[dict[str, Any]]:
     """Hybrid mode: Claude API for text fields, PaddleOCR+OpenCV for checkboxes.
 
@@ -356,7 +357,7 @@ def extract_data_from_image_hybrid(
     # ── Step 2: local OCR extracts checkboxes ─────────────────────────────
     try:
         from local_ocr_extractor import extract_data_from_image_local  # lazy — avoids circular import
-        local_records = extract_data_from_image_local(img)
+        local_records = extract_data_from_image_local(img, status_callback=status_callback)
     except Exception as exc:
         print(f"[HYBRID] Local OCR unavailable: {exc} — falling back to Claude-only")
         return claude_records
@@ -457,6 +458,14 @@ def extract_data_from_pdf(
             status_callback(f"페이지 {page_num} 처리 중... (Claude API, {config.PDF_DPI_CLAUDE} DPI)")
 
         records = extract_data_from_image(img, client=client)
+
+        valid = [r for r in records if not r.get("_skip") and "_raw_response" not in r]
+        if status_callback and valid:
+            r0 = valid[0]
+            ptype = r0.get("_page_type", "?")
+            non_null = sum(1 for v in r0.values() if v is not None and not str(v).startswith("_"))
+            status_callback(f"  → {len(valid)}명분 추출 | 페이지 유형: {ptype} | non-null 필드: {non_null}개")
+
         for record in records:
             if record.get("_skip"):
                 continue
@@ -489,7 +498,15 @@ def extract_data_from_pdf_hybrid(
         if status_callback:
             status_callback(f"페이지 {page_num} 처리 중... (Hybrid)")
 
-        records = extract_data_from_image_hybrid(img, client=client)
+        records = extract_data_from_image_hybrid(img, client=client, status_callback=status_callback)
+
+        valid = [r for r in records if not r.get("_skip") and "_raw_response" not in r]
+        if status_callback and valid:
+            r0 = valid[0]
+            ptype = r0.get("_page_type", "?")
+            non_null = sum(1 for v in r0.values() if v is not None and not str(v).startswith("_"))
+            status_callback(f"  → {len(valid)}명분 추출 | 페이지 유형: {ptype} | non-null 필드: {non_null}개")
+
         for record in records:
             if record.get("_skip"):
                 continue
