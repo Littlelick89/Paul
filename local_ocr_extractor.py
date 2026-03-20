@@ -83,11 +83,13 @@ def _get_paddle():
 
 def _run_ocr(img: Image.Image) -> list[dict]:
     """Run PaddleOCR; return list of {text, conf, x1, y1, x2, y2}."""
+    import logging
     arr = np.array(img.convert("RGB"))
     paddle = _get_paddle()
 
     # Try 2.x API first (ocr + cls), then 3.x API (ocr / predict).
     result = None
+    logging.disable(logging.WARNING)
     for call in [
         lambda: paddle.ocr(arr, cls=True),
         lambda: paddle.ocr(arr),
@@ -98,6 +100,7 @@ def _run_ocr(img: Image.Image) -> list[dict]:
             break
         except Exception:
             continue
+    logging.disable(logging.NOTSET)
 
     items: list[dict] = []
     if result is None or len(result) == 0:
