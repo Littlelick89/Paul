@@ -31,8 +31,15 @@ _paddle: Any = None
 def _get_paddle():
     global _paddle
     if _paddle is None:
+        import logging
+        logging.disable(logging.WARNING)
         from paddleocr import PaddleOCR  # type: ignore
-        _paddle = PaddleOCR(use_angle_cls=True, lang="korean", show_log=False)
+        try:
+            _paddle = PaddleOCR(use_angle_cls=True, lang="korean", show_log=False)
+        except TypeError:
+            # Newer PaddleOCR versions removed show_log parameter
+            _paddle = PaddleOCR(use_angle_cls=True, lang="korean")
+        logging.disable(logging.NOTSET)
     return _paddle
 
 
