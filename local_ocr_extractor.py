@@ -33,15 +33,38 @@ def _get_paddle():
     if _paddle is None:
         import logging
         logging.disable(logging.WARNING)
-        from paddleocr import PaddleOCR  # type: ignore
+
+        # Disable PIR mode and OneDNN at the Paddle C++ level before loading models.
+        # PaddlePaddle 3.x OneDNN + PIR causes:
+        #   ConvertPirAttribute2RuntimeAttribute not support [pir::ArrayAttribute<pir::DoubleAttribute>]
         try:
-            _paddle = PaddleOCR(use_angle_cls=True, lang="korean", show_log=False)
+            import paddle
+            paddle.set_flags({"FLAGS_enable_pir_api": False})
+        except Exception:
+            pass
+        try:
+            import paddle.core as _pc
+            _pc.set_pir_enabled(False)
+        except Exception:
+            pass
+
+        from paddleocr import PaddleOCR  # type: ignore
+
+        # Try initialising with OneDNN disabled (enable_mkldnn=False) first.
+        # Fall back progressively for older/newer PaddleOCR APIs.
+        try:
+            _paddle = PaddleOCR(use_angle_cls=True, lang="korean",
+                                show_log=False, enable_mkldnn=False)
         except TypeError:
             try:
-                _paddle = PaddleOCR(use_angle_cls=True, lang="korean")
+                _paddle = PaddleOCR(use_angle_cls=True, lang="korean",
+                                    enable_mkldnn=False)
             except TypeError:
-                # PaddleOCR 3.x: use_angle_cls also removed
-                _paddle = PaddleOCR(lang="korean")
+                try:
+                    _paddle = PaddleOCR(lang="korean", enable_mkldnn=False)
+                except TypeError:
+                    _paddle = PaddleOCR(lang="korean")
+
         logging.disable(logging.NOTSET)
     return _paddle
 
