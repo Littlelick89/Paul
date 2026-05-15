@@ -105,3 +105,18 @@ CLASS_LEVEL_FIELDS = {"class_number", "course_begin_date", "course_end_date", "t
 
 # Shared folder path (UNC or mapped drive), e.g. r"\\server\share\Training"
 SHARED_FOLDER_PATH = os.getenv("SHARED_FOLDER_PATH", "")
+
+# ---------------------------------------------------------------------------
+# RAG (Retrieval-Augmented Generation) — Education Q&A system
+# ---------------------------------------------------------------------------
+
+RAG_CHUNK_SIZE      = 500   # characters per chunk
+RAG_CHUNK_OVERLAP   = 50    # character overlap between consecutive chunks
+RAG_TOP_K           = 5     # number of chunks to retrieve per query
+
+# Multilingual embedding model (Korean + English, CPU-friendly)
+RAG_EMBEDDING_MODEL = "paraphrase-multilingual-mpnet-base-v2"
+
+# ChromaDB local storage path (relative to rag_app.py / rag_ingest.py location)
+RAG_CHROMA_DB_PATH  = "./chroma_db"
+RAG_COLLECTION_NAME = "training_docs"

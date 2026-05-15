@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>문서 관리 — 관리자</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+      background: #f0f2f5;
+      min-height: 100vh;
+    }
+
+    header {
+      background: #1a3c6e;
+      color: #fff;
+      padding: 14px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    header h1 { font-size: 1.2rem; }
+    header a  { color: #aed6f1; font-size: 0.85rem; text-decoration: none; }
+    header a:hover { text-decoration: underline; }
+
+    main { max-width: 860px; margin: 30px auto; padding: 0 20px; }
+
+    section {
+      background: #fff;
+      border-radius: 10px;
+      padding: 24px;
+      margin-bottom: 28px;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.1);
+    }
+    section h2 {
+      font-size: 1.05rem;
+      margin-bottom: 16px;
+      color: #1a3c6e;
+      border-bottom: 2px solid #1a3c6e;
+      padding-bottom: 8px;
+    }
+
+    #drop-zone {
+      border: 2px dashed #1a3c6e;
+      border-radius: 8px;
+      padding: 36px;
+      text-align: center;
+      cursor: pointer;
+      color: #555;
+      transition: background 0.15s;
+    }
+    #drop-zone:hover, #drop-zone.drag-over { background: #eaf4fb; }
+    #drop-zone p  { margin-top: 8px; font-size: 0.9rem; }
+    #file-input   { display: none; }
+
+    #upload-btn {
+      display: block;
+      margin: 14px auto 0;
+      background: #1a3c6e;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 28px;
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+    #upload-btn:hover    { background: #154360; }
+    #upload-btn:disabled { background: #7f8c8d; cursor: not-allowed; }
+
+    #selected-file { margin-top: 10px; font-size: 0.88rem; color: #333; text-align: center; }
+
+    #progress-wrap { margin-top: 14px; display: none; }
+    #progress-bar  {
+      width: 0;
+      height: 8px;
+      background: #1a3c6e;
+      border-radius: 4px;
+      transition: width 0.25s ease;
+    }
+    #progress-bg {
+      background: #dde;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    #upload-status { margin-top: 6px; font-size: 0.85rem; color: #444; text-align: center; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid #e8e8e8; }
+    th { background: #f5f8ff; color: #1a3c6e; font-weight: 600; }
+    tr:hover td { background: #f9fbff; }
+
+    .del-btn {
+      background: #c0392b;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      padding: 4px 12px;
+      cursor: pointer;
+      font-size: 0.82rem;
+    }
+    .del-btn:hover { background: #a93226; }
+
+    #doc-empty { color: #888; font-style: italic; margin-top: 12px; }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1a3c6e;
+      color: #fff;
+      padding: 10px 22px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+      z-index: 999;
+    }
+    .toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>문서 관리 — 관리자</h1>
+  <a href="/">← 채팅으로 돌아가기</a>
+</header>
+
+<main>
+
+  <section>
+    <h2>PDF 문서 업로드</h2>
+
+    <div id="drop-zone" onclick="document.getElementById('file-input').click()">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none"
+           stroke="#1a3c6e" stroke-width="1.5" stroke-linecap="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      <p>여기를 클릭하거나 PDF 파일을 드래그 앤 드롭하세요</p>
+      <p style="font-size:0.82rem; color:#999;">PDF 파일만 허용됩니다</p>
+    </div>
+
+    <input type="file" id="file-input" accept=".pdf" onchange="onFileSelected(event)" />
+    <div id="selected-file"></div>
+
+    <div id="progress-wrap">
+      <div id="progress-bg"><div id="progress-bar"></div></div>
+      <div id="upload-status"></div>
+    </div>
+
+    <button id="upload-btn" onclick="uploadFile()" disabled>업로드 및 처리</button>
+  </section>
+
+  <section>
+    <h2>등록된 문서 목록</h2>
+    <div id="doc-list-container">
+      <p id="doc-empty">로딩 중...</p>
+    </div>
+  </section>
+
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script>
+  let selectedFile = null;
+  const dropZone     = document.getElementById('drop-zone');
+  const fileInput    = document.getElementById('file-input');
+  const uploadBtn    = document.getElementById('upload-btn');
+  const progressWrap = document.getElementById('progress-wrap');
+  const progressBar  = document.getElementById('progress-bar');
+  const uploadStatus = document.getElementById('upload-status');
+
+  dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', ()  => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file && file.name.toLowerCase().endsWith('.pdf')) {
+      setFile(file);
+    } else {
+      showToast('PDF 파일만 업로드할 수 있습니다.', true);
+    }
+  });
+
+  function onFileSelected(e) {
+    if (e.target.files[0]) setFile(e.target.files[0]);
+  }
+
+  function setFile(file) {
+    selectedFile = file;
+    document.getElementById('selected-file').textContent =
+      `선택된 파일: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+    uploadBtn.disabled = false;
+  }
+
+  async function uploadFile() {
+    if (!selectedFile) return;
+
+    uploadBtn.disabled = true;
+    progressWrap.style.display = 'block';
+    progressBar.style.width    = '10%';
+    progressBar.style.background = '#1a3c6e';
+    uploadStatus.textContent   = '업로드 중...';
+
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+
+    let fakeProgress = 10;
+    const timer = setInterval(() => {
+      if (fakeProgress < 85) {
+        fakeProgress += Math.random() * 8;
+        progressBar.style.width  = Math.min(fakeProgress, 85) + '%';
+        uploadStatus.textContent = '문서 처리 중... (시간이 걸릴 수 있습니다)';
+      }
+    }, 800);
+
+    try {
+      const res  = await fetch('/api/upload', { method: 'POST', body: formData });
+      clearInterval(timer);
+      const data = await res.json();
+
+      if (res.ok) {
+        progressBar.style.width  = '100%';
+        uploadStatus.textContent = `완료: ${data.chunks_added}개 청크가 저장되었습니다.`;
+        showToast(`'${data.filename}' 업로드 완료 (${data.chunks_added} 청크)`);
+        selectedFile = null;
+        fileInput.value = '';
+        document.getElementById('selected-file').textContent = '';
+        loadDocuments();
+      } else {
+        clearInterval(timer);
+        progressBar.style.width    = '100%';
+        progressBar.style.background = '#c0392b';
+        uploadStatus.textContent   = `오류: ${data.error}`;
+        showToast(data.error, true);
+      }
+    } catch (err) {
+      clearInterval(timer);
+      uploadStatus.textContent = '네트워크 오류. 서버 연결을 확인하세요.';
+      showToast('업로드 실패', true);
+    } finally {
+      uploadBtn.disabled = false;
+    }
+  }
+
+  async function loadDocuments() {
+    const container = document.getElementById('doc-list-container');
+    try {
+      const res  = await fetch('/api/documents');
+      const docs = await res.json();
+
+      if (!Array.isArray(docs) || docs.length === 0) {
+        container.innerHTML = '<p id="doc-empty">등록된 문서가 없습니다.</p>';
+        return;
+      }
+
+      const rows = docs.map(d => `
+        <tr>
+          <td>${escHtml(d.filename)}</td>
+          <td>${d.chunk_count}</td>
+          <td>${d.upload_time ? new Date(d.upload_time).toLocaleString('ko-KR') : '-'}</td>
+          <td><button class="del-btn" onclick="deleteDoc('${escHtml(d.filename)}')">삭제</button></td>
+        </tr>
+      `).join('');
+
+      container.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>파일명</th>
+              <th>청크 수</th>
+              <th>업로드 일시</th>
+              <th>작업</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    } catch (err) {
+      container.innerHTML = '<p id="doc-empty">문서 목록을 불러오는 데 실패했습니다.</p>';
+    }
+  }
+
+  async function deleteDoc(filename) {
+    if (!confirm(`'${filename}' 문서를 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`)) return;
+    try {
+      const res  = await fetch(`/api/documents/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(`'${filename}' 삭제 완료 (${data.deleted_chunks} 청크)`);
+        loadDocuments();
+      } else {
+        showToast(data.error, true);
+      }
+    } catch (err) {
+      showToast('삭제 실패. 서버 연결을 확인하세요.', true);
+    }
+  }
+
+  function showToast(msg, isError = false) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.background = isError ? '#c0392b' : '#1a3c6e';
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 3500);
+  }
+
+  function escHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  loadDocuments();
+</script>
+</body>
+</html>
